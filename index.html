@@ -46,7 +46,7 @@ function color(c,max){if(!c)return '#d62728';const t=Math.sqrt(c/max);
   const mix=(x,y,k)=>x.map((v,i)=>Math.round(v+(y[i]-v)*k));
   const rgb=t<.5?mix(a,b,t/.5):mix(b,d,(t-.5)/.5);return `rgb(${rgb})`}
 function dist(a,b){const dx=(a[1]-b[1])*Math.cos(a[0]*Math.PI/180)*111320,dy=(a[0]-b[0])*110540;return Math.hypot(dx,dy)}
-function start(){load().then(j=>{
+function start(){load().catch(()=>({elements:[],fail:1})).then(j=>{
   const addr={},ways=[];
   for(const e of j.elements){const t=e.tags||{};
     if(t['addr:housenumber']&&t['addr:street']){const p=e.type==='node'?[e.lat,e.lon]:e.center?[e.center.lat,e.center.lon]:null;if(!p)continue;
@@ -55,9 +55,9 @@ function start(){load().then(j=>{
       ways.push({n:norm(t.name),name:t.name,g:e.geometry.map(q=>[q.lat,q.lon])})}}
   // Kunden zu Häusern
   const houses={};const missing=[];
-  for(const [name,s,num,plz] of CUST){
+  for(const [name,s,num,plz,lat,lon] of CUST){
     const k=norm(s)+'|'+hn(num);let c=addr[k];let pt=null;
-    if(c){const f=c.find(x=>x.plz===plz)||c[0];pt=f.p}
+    if(lat!=null&&lon!=null)pt=[lat,lon];else if(c){const f=c.find(x=>x.plz===plz)||c[0];pt=f.p}
     const hk=k+'|'+(pt?'1':'0');
     (houses[hk]=houses[hk]||{s,num,pt,list:[],ns:norm(s)}).list.push(name);
     if(!pt)missing.push(s+' '+num)}
@@ -96,6 +96,11 @@ function start(){load().then(j=>{
     const m=L.circleMarker(h.pt,{radius:h.approx?5:7,color:'#fff',weight:1.5,fillColor:h.approx?'#888':'#0b5d1e',fillOpacity:.95}).addTo(map);
     m.bindPopup(`<b>${h.s} ${h.num}</b>${h.approx?' <i>(Lage ungefähr)</i>':''}<br>${h.list.join('<br>')}`);bounds.push(h.pt)}
   if(bounds.length)map.fitBounds(bounds,{padding:[30,30]});
+  const hs=Object.values(houses).filter(h=>h.pt&&!(gi[h.ns]||[]).length);
+  const bs={};hs.forEach(h=>(bs[h.ns]=bs[h.ns]||[]).push(h));
+  for(const k in bs){const a=bs[k].sort((x,y)=>parseInt(x.num)-parseInt(y.num));const c=a.reduce((s,h)=>s+h.list.length,0);
+    const g={name:a[0].s,ws:[{g:a.map(h=>h.pt)}],cnt:c};drawn.push(g);
+    if(a.length>1)L.polyline(a.map(h=>h.pt),{color:color(c,max),weight:5,opacity:.85}).bindTooltip(`${g.name}: ${c} Kunden`,{sticky:true}).addTo(map)}
   const rows=drawn.filter(g=>g.cnt).sort((a,b)=>b.cnt-a.cnt);
   const l=document.getElementById('list');
   rows.forEach(g=>{const d=document.createElement('div');d.innerHTML=`<span>${g.name}</span><b>${g.cnt}</b>`;d.onclick=()=>{const pts=g.ws.flatMap(w=>w.g);map.fitBounds(pts,{padding:[40,40]})};l.appendChild(d)});
