@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="de"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Kundenkarte</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+html,body{margin:0;height:100%;font-family:-apple-system,system-ui,sans-serif}
+#map{position:absolute;inset:0}
+#panel{position:absolute;z-index:1000;top:8px;left:8px;max-width:260px;background:#fffffff2;border-radius:10px;padding:8px 10px;box-shadow:0 2px 10px #0004;font-size:13px}
+#panel h1{font-size:14px;margin:0 0 4px}
+.bar{height:10px;border-radius:5px;background:linear-gradient(90deg,#d62728,#e8d44d,#2ca02c,#0b5d1e)}
+#status{margin-top:4px;color:#555}
+#list{max-height:35vh;overflow:auto;margin-top:6px;display:none}
+#list div{padding:3px 0;border-top:1px solid #eee;cursor:pointer;display:flex;justify-content:space-between;gap:8px}
+button{font:inherit;padding:3px 8px;margin-top:6px}
+.sw{display:inline-block;width:12px;height:4px;vertical-align:middle;margin-right:4px}
+</style></head><body>
+<div id="map"></div>
+<div id="panel"><h1>Kundenkarte</h1>
+<div><span class="sw" style="background:#d62728"></span>keine Kunden &nbsp;<span class="sw" style="background:#0b5d1e"></span>viele Kunden</div>
+<div class="bar"></div><div id="status">Lade Karte …</div>
+<button id="tg">Straßenliste</button> <button id="ld">Kundendaten laden</button><input type="file" id="fi" accept=".json,application/json" style="display:none"><div id="list"></div></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+let CUST=[];
+const norm=s=>s.toLowerCase().replace(/ß/g,'ss').replace(/straße|strasse|str\./g,'str').replace(/[^a-z0-9äöü]/g,'').replace(/ä/g,'ae').replace(/ö/g,'oe').replace(/ü/g,'ue');
+const hn=s=>(s||'').toLowerCase().replace(/[^0-9a-z]/g,'');
+const map=L.map('map',{preferCanvas:true}).setView([50.885,6.99],14);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
+const st=document.getElementById('status');
+document.getElementById('tg').onclick=()=>{const l=document.getElementById('list');l.style.display=l.style.display==='block'?'none':'block'};
+const MIRRORS=['https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter','https://overpass.private.coffee/api/interpreter'];
+const Q='[out:json][timeout:120];(nwr["addr:housenumber"]["addr:street"](50.84,6.93,50.93,7.08););out center tags qt;(way["highway"]["name"](50.84,6.93,50.93,7.08););out geom qt;';
+async function load(){
+  try{const c=localStorage.getItem('ov1');if(c)return JSON.parse(c)}catch(e){}
+  let err;
+  for(const m of MIRRORS){
+    try{st.textContent='Lade Straßen- und Hausdaten …';
+      const r=await fetch(m,{method:'POST',body:'data='+encodeURIComponent(Q)});
+      if(!r.ok)throw new Error(r.status);const j=await r.json();
+      try{localStorage.setItem('ov1',JSON.stringify(j))}catch(e){}
+      return j}catch(e){err=e}
+  }throw err}
+function color(c,max){if(!c)return '#d62728';const t=Math.sqrt(c/max);
+  const a=[232,212,77],b=[44,160,44],d=[11,93,30];
+  const mix=(x,y,k)=>x.map((v,i)=>Math.round(v+(y[i]-v)*k));
+  const rgb=t<.5?mix(a,b,t/.5):mix(b,d,(t-.5)/.5);return `rgb(${rgb})`}
+function dist(a,b){const dx=(a[1]-b[1])*Math.cos(a[0]*Math.PI/180)*111320,dy=(a[0]-b[0])*110540;return Math.hypot(dx,dy)}
+function start(){load().then(j=>{
+  const addr={},ways=[];
+  for(const e of j.elements){const t=e.tags||{};
+    if(t['addr:housenumber']&&t['addr:street']){const p=e.type==='node'?[e.lat,e.lon]:e.center?[e.center.lat,e.center.lon]:null;if(!p)continue;
+      const k=norm(t['addr:street'])+'|'+hn(t['addr:housenumber']);(addr[k]=addr[k]||[]).push({p,plz:t['addr:postcode']})}
+    else if(t.highway&&e.geometry&&!/motorway|trunk|service|footway|path|steps|cycleway|track|bridleway/.test(t.highway)){
+      ways.push({n:norm(t.name),name:t.name,g:e.geometry.map(q=>[q.lat,q.lon])})}}
+  // Kunden zu Häusern
+  const houses={};const missing=[];
+  for(const [name,s,num,plz] of CUST){
+    const k=norm(s)+'|'+hn(num);let c=addr[k];let pt=null;
+    if(c){const f=c.find(x=>x.plz===plz)||c[0];pt=f.p}
+    const hk=k+'|'+(pt?'1':'0');
+    (houses[hk]=houses[hk]||{s,num,pt,list:[],ns:norm(s)}).list.push(name);
+    if(!pt)missing.push(s+' '+num)}
+  // Straße je Weg zuordnen: Wege gleichen Namens zusammenfassen (verbunden)
+  const byName={};ways.forEach(w=>(byName[w.n]=byName[w.n]||[]).push(w));
+  const grp=[];
+  for(const n in byName){const ws=byName[n];const par=ws.map((_,i)=>i);const f=i=>par[i]===i?i:(par[i]=f(par[i]));
+    const idx={};ws.forEach((w,i)=>{for(const q of [w.g[0],w.g[w.g.length-1]]){const key=q.join(',');if(idx[key]!==undefined)par[f(i)]=f(idx[key]);else idx[key]=i}});
+    const m={};ws.forEach((w,i)=>{(m[f(i)]=m[f(i)]||{n,name:w.name,ws:[],cnt:0,houses:[]}).ws.push(w)});
+    for(const k in m)grp.push(m[k])}
+  // Hausdaten ohne exakten Treffer: Mittelpunkt der Straße
+  const gi={};grp.forEach(g=>(gi[g.n]=gi[g.n]||[]).push(g));
+  const approx=[];
+  for(const h of Object.values(houses)){
+    const cands=gi[h.ns]||[];
+    if(!h.pt){ // naechstes Haus derselben Straße als Referenz, sonst Straßenmitte
+      const same=Object.values(houses).filter(o=>o.pt&&o.ns===h.ns);
+      if(same.length)h.pt=same[0].pt;else if(cands.length){const g=cands[0].ws[0].g;h.pt=g[Math.floor(g.length/2)]}
+      h.approx=true}
+    if(!h.pt)continue;
+    let best=null,bd=1e9;
+    for(const g of cands)for(const w of g.ws)for(const q of w.g){const d=dist(h.pt,q);if(d<bd){bd=d;best=g}}
+    if(best&&bd<400){best.cnt+=h.list.length;best.houses.push(h)}
+  }
+  const custPts=Object.values(houses).filter(h=>h.pt).map(h=>h.pt);
+  const max=Math.max(1,...grp.map(g=>g.cnt));
+  const bounds=[];
+  const drawn=[];
+  for(const g of grp){
+    const near=g.cnt>0||g.ws.some(w=>w.g.some((q,i)=>i%3===0&&custPts.some(p=>Math.abs(p[0]-q[0])<.0035&&Math.abs(p[1]-q[1])<.005&&dist(p,q)<350)));
+    if(!near)continue;
+    const col=color(g.cnt,max);
+    for(const w of g.ws){L.polyline(w.g,{color:col,weight:g.cnt?6:4,opacity:.85}).bindTooltip(`${g.name}: ${g.cnt} Kunde${g.cnt===1?'':'n'}`,{sticky:true}).addTo(map)}
+    drawn.push(g)}
+  for(const h of Object.values(houses)){if(!h.pt)continue;
+    const m=L.circleMarker(h.pt,{radius:h.approx?5:7,color:'#fff',weight:1.5,fillColor:h.approx?'#888':'#0b5d1e',fillOpacity:.95}).addTo(map);
+    m.bindPopup(`<b>${h.s} ${h.num}</b>${h.approx?' <i>(Lage ungefähr)</i>':''}<br>${h.list.join('<br>')}`);bounds.push(h.pt)}
+  if(bounds.length)map.fitBounds(bounds,{padding:[30,30]});
+  const rows=drawn.filter(g=>g.cnt).sort((a,b)=>b.cnt-a.cnt);
+  const l=document.getElementById('list');
+  rows.forEach(g=>{const d=document.createElement('div');d.innerHTML=`<span>${g.name}</span><b>${g.cnt}</b>`;d.onclick=()=>{const pts=g.ws.flatMap(w=>w.g);map.fitBounds(pts,{padding:[40,40]})};l.appendChild(d)});
+  const tot=CUST.length,ap=Object.values(houses).filter(h=>h.approx).reduce((a,h)=>a+h.list.length,0);
+  st.textContent=`${tot} Kunden, ${Object.keys(houses).length} Häuser`+(ap?` – bei ${ap} Kunden ist die Hausposition ungefähr (grau)`:'');
+}).catch(e=>{st.textContent='Karte konnte nicht geladen werden (Internet?): '+e.message})}
+
+const layers=[];
+document.getElementById('ld').onclick=()=>document.getElementById('fi').click();
+document.getElementById('fi').onchange=async e=>{const f=e.target.files[0];if(!f)return;
+  try{const d=JSON.parse(await f.text());if(!Array.isArray(d))throw 0;try{localStorage.setItem('cust1',JSON.stringify(d))}catch(x){}location.reload()}catch(x){st.textContent='Datei konnte nicht gelesen werden.'}};
+try{CUST=JSON.parse(localStorage.getItem('cust1')||'[]')}catch(e){CUST=[]}
+if(CUST.length)start();else st.textContent='Bitte oben „Kundendaten laden" tippen und Kundendaten.json wählen.';
+</script></body></html>
